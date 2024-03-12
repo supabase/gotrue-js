@@ -33,7 +33,8 @@ import {
   sleep,
   supportsLocalStorage,
   parseParametersFromURL,
-  getCodeChallengeAndMethod,
+  isCodeFlowType,
+  getCodeFlowParams,
 } from './lib/helpers'
 import { localStorageAdapter, memoryLocalStorageAdapter } from './lib/local-storage'
 import { polyfillGlobalThis } from './lib/polyfills'
@@ -414,10 +415,12 @@ export default class GoTrueClient {
         const { email, password, options } = credentials
         let codeChallenge: string | null = null
         let codeChallengeMethod: string | null = null
-        if (this.flowType === 'pkce') {
-          [codeChallenge, codeChallengeMethod] = await getCodeChallengeAndMethod(
+        let responseType: string | null = null
+        if (isCodeFlowType(this.flowType)) {
+          const [codeChallenge, codeChallengeMethod, responseType] = await getCodeFlowParams(
             this.storage,
-            this.storageKey
+            this.storageKey,
+            this.flowType
           )
         }
         res = await _request(this.fetch, 'POST', `${this.url}/signup`, {
@@ -430,6 +433,7 @@ export default class GoTrueClient {
             gotrue_meta_security: { captcha_token: options?.captchaToken },
             code_challenge: codeChallenge,
             code_challenge_method: codeChallengeMethod,
+            response_type: responseType,
           },
           xform: _sessionResponse,
         })
@@ -567,28 +571,32 @@ export default class GoTrueClient {
     await this.initializePromise
 
     return this._acquireLock(-1, async () => {
-      return this._exchangeCodeForSession(authCode)
+      return this._exchangeCodeForSession(authCode, this.flowType)
     })
   }
 
-  private async _exchangeCodeForSession(authCode: string): Promise<
+  private async _exchangeCodeForSession(
+    authCode: string,
+    flowType: AuthFlowType
+  ): Promise<
     | {
         data: { session: Session; user: User; redirectType: string | null }
         error: null
       }
     | { data: { session: null; user: null; redirectType: null }; error: AuthError }
   > {
+    // TODO: wrap to only call when using PKCE flow
     const storageItem = await getItemAsync(this.storage, `${this.storageKey}-code-verifier`)
     const [codeVerifier, redirectType] = ((storageItem ?? '') as string).split('/')
     const { data, error } = await _request(
       this.fetch,
       'POST',
-      `${this.url}/token?grant_type=pkce`,
+      `${this.url}/token?grant_type=${flowType}`,
       {
         headers: this.headers,
         body: {
           auth_code: authCode,
-          code_verifier: codeVerifier,
+          code_verifier: this.flowType === 'pkce' ? codeVerifier : null,
         },
         xform: _sessionResponse,
       }
@@ -678,12 +686,15 @@ export default class GoTrueClient {
         const { email, options } = credentials
         let codeChallenge: string | null = null
         let codeChallengeMethod: string | null = null
-        if (this.flowType === 'pkce') {
-          [codeChallenge, codeChallengeMethod] = await getCodeChallengeAndMethod(
+        let responseType: string | null = null
+        if (isCodeFlowType(this.flowType)) {
+          ;[codeChallenge, codeChallengeMethod, responseType] = await getCodeFlowParams(
             this.storage,
-            this.storageKey
+            this.storageKey,
+            this.flowType
           )
         }
+
         const { error } = await _request(this.fetch, 'POST', `${this.url}/otp`, {
           headers: this.headers,
           body: {
@@ -693,6 +704,7 @@ export default class GoTrueClient {
             gotrue_meta_security: { captcha_token: options?.captchaToken },
             code_challenge: codeChallenge,
             code_challenge_method: codeChallengeMethod,
+            response_type: responseType,
           },
           redirectTo: options?.emailRedirectTo,
         })
@@ -796,10 +808,12 @@ export default class GoTrueClient {
       await this._removeSession()
       let codeChallenge: string | null = null
       let codeChallengeMethod: string | null = null
-      if (this.flowType === 'pkce') {
-        [codeChallenge, codeChallengeMethod] = await getCodeChallengeAndMethod(
+      let responseType: string | null = null
+      if (isCodeFlowType(this.flowType)) {
+        ;[codeChallenge, codeChallengeMethod, responseType] = await getCodeFlowParams(
           this.storage,
-          this.storageKey
+          this.storageKey,
+          this.flowType
         )
       }
 
@@ -814,6 +828,7 @@ export default class GoTrueClient {
           skip_http_redirect: true, // fetch does not handle redirects
           code_challenge: codeChallenge,
           code_challenge_method: codeChallengeMethod,
+          response_type: responseType,
         },
         headers: this.headers,
         xform: _ssoResponse,
@@ -1242,10 +1257,12 @@ export default class GoTrueClient {
         const session: Session = sessionData.session
         let codeChallenge: string | null = null
         let codeChallengeMethod: string | null = null
-        if (this.flowType === 'pkce' && attributes.email != null) {
-          [codeChallenge, codeChallengeMethod] = await getCodeChallengeAndMethod(
+        let responseType: string | null = null
+        if (isCodeFlowType(this.flowType) && attributes.email != null) {
+          ;[codeChallenge, codeChallengeMethod, responseType] = await getCodeFlowParams(
             this.storage,
-            this.storageKey
+            this.storageKey,
+            this.flowType
           )
         }
 
@@ -1256,6 +1273,7 @@ export default class GoTrueClient {
             ...attributes,
             code_challenge: codeChallenge,
             code_challenge_method: codeChallengeMethod,
+            response_type: responseType,
           },
           jwt: session.access_token,
           xform: _userResponse,
@@ -1415,7 +1433,7 @@ export default class GoTrueClient {
   /**
    * Gets the session data from a URL string
    */
-  private async _getSessionFromURL(isPKCEFlow: boolean): Promise<
+  private async _getSessionFromURL(isCodeFlow: boolean): Promise<
     | {
         data: { session: Session; redirectType: string | null }
         error: null
@@ -1426,15 +1444,16 @@ export default class GoTrueClient {
       if (!isBrowser()) throw new AuthImplicitGrantRedirectError('No browser detected.')
       if (this.flowType === 'implicit' && !this._isImplicitGrantFlow()) {
         throw new AuthImplicitGrantRedirectError('Not a valid implicit grant flow url.')
-      } else if (this.flowType == 'pkce' && !isPKCEFlow) {
-        throw new AuthPKCEGrantCodeExchangeError('Not a valid PKCE flow url.')
+      } else if (isCodeFlowType(this.flowType) && !isCodeFlow) {
+        throw new AuthPKCEGrantCodeExchangeError('Not a valid PKCE or code flow url.')
       }
 
       const params = parseParametersFromURL(window.location.href)
 
-      if (isPKCEFlow) {
+      if (isCodeFlow) {
+        // TODO: Adjust this error to be generic
         if (!params.code) throw new AuthPKCEGrantCodeExchangeError('No code detected.')
-        const { data, error } = await this._exchangeCodeForSession(params.code)
+        const { data, error } = await this._exchangeCodeForSession(params.code, this.flowType)
         if (error) throw error
 
         const url = new URL(window.location.href)
@@ -1550,6 +1569,19 @@ export default class GoTrueClient {
     )
 
     return !!(params.code && currentStorageContent)
+  }
+
+  /**
+   * Checks if the current URL and backing storage contain parameters given by a PKCE flow
+   */
+  private async _isAuthCodeFlow(): Promise<boolean> {
+    const params = parseParametersFromURL(window.location.href)
+
+    const currentStorageContent = await getItemAsync(
+      this.storage,
+      `${this.storageKey}-code-verifier`
+    )
+    return !!params.code
   }
 
   /**
@@ -1671,12 +1703,12 @@ export default class GoTrueClient {
   > {
     let codeChallenge: string | null = null
     let codeChallengeMethod: string | null = null
-
-    if (this.flowType === 'pkce') {
-      [codeChallenge, codeChallengeMethod] = await getCodeChallengeAndMethod(
+    let responseType: string | null = null
+    if (isCodeFlowType(this.flowType)) {
+      ;[codeChallenge, codeChallengeMethod, responseType] = await getCodeFlowParams(
         this.storage,
         this.storageKey,
-        true // isPasswordRecovery
+        this.flowType
       )
     }
     try {
@@ -1685,6 +1717,7 @@ export default class GoTrueClient {
           email,
           code_challenge: codeChallenge,
           code_challenge_method: codeChallengeMethod,
+          response_type: responseType,
           gotrue_meta_security: { captcha_token: options.captchaToken },
         },
         headers: this.headers,
@@ -2303,16 +2336,28 @@ export default class GoTrueClient {
     if (options?.scopes) {
       urlParams.push(`scopes=${encodeURIComponent(options.scopes)}`)
     }
-    if (this.flowType === 'pkce') {
-      const [codeChallenge, codeChallengeMethod] = await getCodeChallengeAndMethod(
-        this.storage,
-        this.storageKey
-      )
 
+    if (isCodeFlowType(this.flowType)) {
+      const [codeChallenge, codeChallengeMethod, responseType] = await getCodeFlowParams(
+        this.storage,
+        this.storageKey,
+        this.flowType
+      )
+      // Initialize URLSearchParams with response_type=code
       const flowParams = new URLSearchParams({
-        code_challenge: `${encodeURIComponent(codeChallenge)}`,
-        code_challenge_method: `${encodeURIComponent(codeChallengeMethod)}`,
+        response_type: 'code',
       })
+
+      // Check if the flow type is PKCE and add corresponding parameters
+      // TODO: change this to use exported method
+      if (this.flowType === 'pkce' && codeChallenge && codeChallengeMethod) {
+        flowParams.append('code_challenge', encodeURIComponent(codeChallenge))
+        flowParams.append('code_challenge_method', encodeURIComponent(codeChallengeMethod))
+      } else if (this.flowType == 'pkce') {
+        // TODO: come back and handle this - this shouldn't happen
+        throw 'unexpected error, code challenge method and code challenge should not be null'
+      }
+
       urlParams.push(flowParams.toString())
     }
     if (options?.queryParams) {
