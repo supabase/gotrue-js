@@ -411,6 +411,9 @@ export default class GoTrueClient {
    * @returns A user if the server has "autoconfirm" OFF
    */
   async signUp(credentials: SignUpWithPasswordCredentials): Promise<AuthResponse> {
+    const currentSession = await this._useSession(async (result) => {
+      return result.data.session
+    })
     try {
       await this._removeSession()
 
@@ -469,14 +472,18 @@ export default class GoTrueClient {
       if (data.session) {
         await this._saveSession(data.session)
         await this._notifyAllSubscribers('SIGNED_IN', session)
+      } else if (currentSession) {
+        await this._saveSession(currentSession)
       }
 
       return { data: { user, session }, error: null }
     } catch (error) {
+      if (currentSession) {
+        await this._saveSession(currentSession)
+      }
       if (isAuthError(error)) {
         return { data: { user: null, session: null }, error }
       }
-
       throw error
     }
   }
@@ -492,6 +499,9 @@ export default class GoTrueClient {
   async signInWithPassword(
     credentials: SignInWithPasswordCredentials
   ): Promise<AuthTokenResponsePassword> {
+    const currentSession = await this._useSession(async (result) => {
+      return result.data.session
+    })
     try {
       await this._removeSession()
 
@@ -533,7 +543,10 @@ export default class GoTrueClient {
       if (data.session) {
         await this._saveSession(data.session)
         await this._notifyAllSubscribers('SIGNED_IN', data.session)
+      } else if (currentSession) {
+        await this._saveSession(currentSession)
       }
+
       return {
         data: {
           user: data.user,
@@ -543,6 +556,9 @@ export default class GoTrueClient {
         error,
       }
     } catch (error) {
+      if (currentSession) {
+        await this._saveSession(currentSession)
+      }
       if (isAuthError(error)) {
         return { data: { user: null, session: null }, error }
       }
@@ -555,14 +571,24 @@ export default class GoTrueClient {
    * This method supports the PKCE flow.
    */
   async signInWithOAuth(credentials: SignInWithOAuthCredentials): Promise<OAuthResponse> {
-    await this._removeSession()
-
-    return await this._handleProviderSignIn(credentials.provider, {
-      redirectTo: credentials.options?.redirectTo,
-      scopes: credentials.options?.scopes,
-      queryParams: credentials.options?.queryParams,
-      skipBrowserRedirect: credentials.options?.skipBrowserRedirect,
+    const currentSession = await this._useSession(async (result) => {
+      return result.data.session
     })
+    try {
+      await this._removeSession()
+
+      return await this._handleProviderSignIn(credentials.provider, {
+        redirectTo: credentials.options?.redirectTo,
+        scopes: credentials.options?.scopes,
+        queryParams: credentials.options?.queryParams,
+        skipBrowserRedirect: credentials.options?.skipBrowserRedirect,
+      })
+    } catch (error) {
+      if (currentSession) {
+        await this._saveSession(currentSession)
+      }
+      throw error
+    }
   }
 
   /**
@@ -619,9 +645,11 @@ export default class GoTrueClient {
    * should be enabled and configured.
    */
   async signInWithIdToken(credentials: SignInWithIdTokenCredentials): Promise<AuthTokenResponse> {
-    await this._removeSession()
-
+    const currentSession = await this._useSession(async (result) => {
+      return result.data.session
+    })
     try {
+      await this._removeSession()
       const { options, provider, token, access_token, nonce } = credentials
 
       const res = await _request(this.fetch, 'POST', `${this.url}/token?grant_type=id_token`, {
@@ -648,9 +676,15 @@ export default class GoTrueClient {
       if (data.session) {
         await this._saveSession(data.session)
         await this._notifyAllSubscribers('SIGNED_IN', data.session)
+      } else if (currentSession) {
+        await this._saveSession(currentSession)
       }
+
       return { data, error }
     } catch (error) {
+      if (currentSession) {
+        await this._saveSession(currentSession)
+      }
       if (isAuthError(error)) {
         return { data: { user: null, session: null }, error }
       }
@@ -676,6 +710,9 @@ export default class GoTrueClient {
    * This method supports PKCE when an email is passed.
    */
   async signInWithOtp(credentials: SignInWithPasswordlessCredentials): Promise<AuthOtpResponse> {
+    const currentSession = await this._useSession(async (result) => {
+      return result.data.session
+    })
     try {
       await this._removeSession()
 
@@ -719,6 +756,9 @@ export default class GoTrueClient {
       }
       throw new AuthInvalidCredentialsError('You must provide either an email or phone number.')
     } catch (error) {
+      if (currentSession) {
+        await this._saveSession(currentSession)
+      }
       if (isAuthError(error)) {
         return { data: { user: null, session: null }, error }
       }
@@ -731,6 +771,9 @@ export default class GoTrueClient {
    * Log in a user given a User supplied OTP or TokenHash received through mobile or email.
    */
   async verifyOtp(params: VerifyOtpParams): Promise<AuthResponse> {
+    const currentSession = await this._useSession(async (result) => {
+      return result.data.session
+    })
     try {
       if (params.type !== 'email_change' && params.type !== 'phone_change') {
         // we don't want to remove the authenticated session if the user is performing an email_change or phone_change verification
@@ -770,10 +813,15 @@ export default class GoTrueClient {
           params.type == 'recovery' ? 'PASSWORD_RECOVERY' : 'SIGNED_IN',
           session
         )
+      } else if (currentSession) {
+        await this._saveSession(currentSession)
       }
 
       return { data: { user, session }, error: null }
     } catch (error) {
+      if (currentSession) {
+        await this._saveSession(currentSession)
+      }
       if (isAuthError(error)) {
         return { data: { user: null, session: null }, error }
       }
@@ -797,6 +845,9 @@ export default class GoTrueClient {
    * organization's SSO Identity Provider UUID directly instead.
    */
   async signInWithSSO(params: SignInWithSSO): Promise<SSOResponse> {
+    const currentSession = await this._useSession(async (result) => {
+      return result.data.session
+    })
     try {
       await this._removeSession()
       let codeChallenge: string | null = null
@@ -824,6 +875,9 @@ export default class GoTrueClient {
         xform: _ssoResponse,
       })
     } catch (error) {
+      if (currentSession) {
+        await this._saveSession(currentSession)
+      }
       if (isAuthError(error)) {
         return { data: null, error }
       }
@@ -871,6 +925,9 @@ export default class GoTrueClient {
    * Resends an existing signup confirmation email, email change email, SMS OTP or phone change OTP.
    */
   async resend(credentials: ResendParams): Promise<AuthOtpResponse> {
+    const currentSession = await this._useSession(async (result) => {
+      return result.data.session
+    })
     try {
       if (credentials.type != 'email_change' && credentials.type != 'phone_change') {
         await this._removeSession()
@@ -888,6 +945,9 @@ export default class GoTrueClient {
           },
           redirectTo: options?.emailRedirectTo,
         })
+        if (currentSession) {
+          await this._saveSession(currentSession)
+        }
         return { data: { user: null, session: null }, error }
       } else if ('phone' in credentials) {
         const { phone, type, options } = credentials
@@ -899,12 +959,18 @@ export default class GoTrueClient {
             gotrue_meta_security: { captcha_token: options?.captchaToken },
           },
         })
+        if (currentSession) {
+          await this._saveSession(currentSession)
+        }
         return { data: { user: null, session: null, messageId: data?.message_id }, error }
       }
       throw new AuthInvalidCredentialsError(
         'You must provide either an email or phone number and a type'
       )
     } catch (error) {
+      if (currentSession) {
+        await this._saveSession(currentSession)
+      }
       if (isAuthError(error)) {
         return { data: { user: null, session: null }, error }
       }
@@ -1893,6 +1959,7 @@ export default class GoTrueClient {
         this._debug(debugName, 'session is not valid')
         if (currentSession !== null) {
           await this._removeSession()
+          await this._notifyAllSubscribers('SIGNED_OUT', null)
         }
 
         return
@@ -1920,6 +1987,7 @@ export default class GoTrueClient {
                 error
               )
               await this._removeSession()
+              await this._notifyAllSubscribers('SIGNED_OUT', null)
             }
           }
         }
@@ -2085,10 +2153,12 @@ export default class GoTrueClient {
       // finished and tests run endlessly. This can be prevented by calling
       // `unref()` on the returned object.
       ticker.unref()
+      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
       // @ts-ignore
     } else if (typeof Deno !== 'undefined' && typeof Deno.unrefTimer === 'function') {
       // similar like for NodeJS, but with the Deno API
       // https://deno.land/api@latest?unstable&s=Deno.unrefTimer
+      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
       // @ts-ignore
       Deno.unrefTimer(ticker)
     }
